@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+# -*- coding utf-8 -*-
+
+from datetime import datetime
+
+from std_srvs.srv import Empty, EmptyResponse
+import actionlib
+import rospy
+import unique_id
+
+from architecture_3t.msg import Order, OrderAction, OrderGoal
+from architecture_3t.srv import CreateOrder, CreateOrderResponse
+
+
+class Planner:
+    """Turtlesim painter tasks planner.
+
+    * Goals defined in schedule.
+    * Resources defined implicitly while executing one order at the same time.
+    * Durations provided from external environment, might be shared with
+      behaviors.
+    * Constrains are not defined while only one robot used.
+    """
+
+    def __init__(self):
+        rospy.init_node("planning")
+        rospy.loginfo(f"Node {rospy.get_name()} starting")
+        self.schedule = {}
+        self.durations_sec = {
+            "circle": rospy.Duration(float(rospy.get_param("~circle_time_sec", None))),
+            # "square": rospy.Duration(float(rospy.get_param("square_time_sec", None))),
+        }
+        rospy.Service("~order/create", CreateOrder, self.create_order_cb)
+        rospy.Service("~schedule/print", Empty, self.print_schedule_cb)
+        self.executor_ac = actionlib.SimpleActionClient("/executor/order", OrderAction)
+        rospy.loginfo(f"Node {rospy.get_name()} ready")
+
+    def create_order_cb(self, req):
+        order = req.order
+        order.order_id = unique_id.toMsg(unique_id.fromRandom())
+        exec_duration = order.num_circles * self.durations_sec["circle"]  # \
+                  # + order.num_squares * self.durations_sec["square"]
+        begins_at = self.free_at() + rospy.Duration(1.0)
+        begins_in = begins_at - rospy.Time.now()
+        rospy.Timer(begins_in, self.run_order, oneshot=True)
+        ends_at = begins_at + exec_duration
+        self.schedule[begins_at] = (
+            req.order,  # order to execute
+            ends_at,  # ends_at
+        )
+        return CreateOrderResponse(order_id=order.order_id, done_at=ends_at)
+
+    def print_schedule_cb(self, req):
+        rospy.loginfo(f"Schedule now: {self.schedule}")
+        return EmptyResponse()
+
+    def free_at(self):
+        ends_at_all = [v[1] for v in self.schedule.values()]
+        try:
+            ends_at_max = max(ends_at_all)
+        except ValueError:  # empty schedule
+            return rospy.Time.now()
+        if ends_at_max < rospy.Time.now():  # all done
+            return rospy.Time.now()
+        else:
+            return ends_at_max
+
+    def run_order(self, ev):
+        order_to_run = None
+        for begins_at in self.schedule.keys():
+            if abs(begins_at - rospy.Time.now()) < rospy.Duration(1.0):
+                order_to_run = self.schedule[begins_at][0]
+        rospy.loginfo(f"Starting order {order_to_run.order_id}")
+        goal = OrderGoal()
+        goal.order = order_to_run
+        self.executor_ac.send_goal(goal)
+        self.executor_ac.wait_for_result()
+        rospy.loginfo(f"Order {order_to_run.order_id} complete!")
+
+    def spin(self):
+        rospy.spin()
+
+
+if __name__ == "__main__":
+    Planner().spin()

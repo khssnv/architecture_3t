@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import abc
+import importlib
+import math
+
+from geometry_msgs.msg import Twist, Vector3
+from std_srvs.srv import Empty
+import actionlib
+import rospy
+
+from architecture_3t.behaviors import Line, Circle, Idle, Reset
+from architecture_3t.msg import OrderAction, OrderGoal, OrderResult
+
+
+class Executor:
+    def __init__(self):
+        rospy.init_node("executor")
+        rospy.loginfo(f"Node {rospy.get_name()} starting")
+        self.order_as = actionlib.SimpleActionServer(
+            "~order",
+            OrderAction,
+            self.exec_order,
+            auto_start = False,
+        )
+        self.order_as.start()
+        self.behavior_now = Idle()
+        self.behavior_now.setup()
+        self.behavior_now.do_once()
+        rospy.loginfo(f"Node {rospy.get_name()} ready")
+
+    def exec_order(self, goal):
+        """Sequencing procedure."""
+
+        circles = goal.order.num_circles
+        self.behavior_now = Reset()
+        self.behavior_now.setup()
+        self.behavior_now.do_once()
+        if self.behavior_now.state == "fail":
+            self.handle_error()
+            return
+        tasks_count = 0
+
+        for i in range(circles):
+            rate = rospy.Rate(10)
+
+            self.behavior_now = Circle()
+            self.behavior_now.setup(rate.sleep_dur.to_sec(), "turtle1")
+            while self.behavior_now.state not in ["done", "fail"]:
+                self.behavior_now.do_once()
+                rate.sleep()
+            tasks_count += 1
+
+            if self.behavior_now.state == "fail":
+                self.handle_error()
+                return
+
+            self.behavior_now = Line()
+            self.behavior_now.setup(rate.sleep_dur.to_sec(), "turtle1")
+            while self.behavior_now.state not in ["done", "fail"]:
+                self.behavior_now.do_once()
+                rate.sleep()
+            tasks_count += 1
+
+            if self.behavior_now.state == "fail":
+                self.handle_error()
+                return
+
+        self.order_as.set_succeeded(OrderResult())
+
+        rospy.loginfo(
+            f"{tasks_count} tasks for order {goal.order.order_id} complete!"
+        )
+
+    def handle_error(self):
+        rospy.logwarn(
+            f"Order {goal.order.order_id} execution failed while "
+            f"behavior {self.behavior_now.name}"
+        )
+        self.order_as.set_aborted(OrderResult())
+        self.bevavior_now = Reset()
+        self.bevavior_now.setup("turtle1")
+        self.bevavior_now.do_once()
+
+    def spin(self):
+        rospy.spin()
+
+
+if __name__ == "__main__":
+    Executor().spin()
